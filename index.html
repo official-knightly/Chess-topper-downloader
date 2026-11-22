@@ -145,6 +145,36 @@
           <a class="subtle-link" href="https://github.com/official-knightly/Chess-topper-mobile" target="_blank" rel="noreferrer">View mobile repository <span aria-hidden="true">↗</span></a>
         </article>
       </div>
+      <section class="build-library" id="all-builds" aria-labelledby="build-library-title">
+        <div class="library-heading">
+          <div>
+            <p class="eyebrow">05 / EVERY PUBLISHED BUILD</p>
+            <h3 id="build-library-title">The complete download library.</h3>
+            <p class="library-description">Every installer published in your GitHub releases, collected here automatically. Pick a version and download the actual build file.</p>
+          </div>
+          <div class="library-count"><strong id="build-count">—</strong><span>available files</span></div>
+        </div>
+        <div class="library-toolbar">
+          <div class="filter-chips" role="group" aria-label="Filter downloads by platform">
+            <button class="filter-chip is-active" type="button" data-filter="all" aria-pressed="true">All builds</button>
+            <button class="filter-chip" type="button" data-filter="windows" aria-pressed="false">Windows</button>
+            <button class="filter-chip" type="button" data-filter="mac" aria-pressed="false">macOS</button>
+            <button class="filter-chip" type="button" data-filter="linux" aria-pressed="false">Linux</button>
+            <button class="filter-chip" type="button" data-filter="android" aria-pressed="false">Android</button>
+            <button class="filter-chip" type="button" data-filter="extension" aria-pressed="false">Extension</button>
+          </div>
+          <label class="search-builds">
+            <span class="visually-hidden">Search downloads</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8"></circle><path d="m16 16 5 5"></path></svg>
+            <input id="build-search" type="search" placeholder="Search versions or files…" autocomplete="off">
+          </label>
+        </div>
+        <p class="library-status" id="library-status" role="status" aria-live="polite">Loading every published release…</p>
+        <div class="build-list" id="build-library-list" aria-live="polite" aria-busy="true">
+          <div class="build-placeholder"><span class="loading-dot"></span> Checking GitHub releases for installers…</div>
+        </div>
+        <p class="library-footnote">Each Download action retrieves that exact release asset from GitHub. Older builds remain available alongside the latest release.</p>
+      </section>
       <p class="downloads-footnote">Downloads are hosted by GitHub. Always check the release notes and platform requirements before installing.</p>
     </section>
 
