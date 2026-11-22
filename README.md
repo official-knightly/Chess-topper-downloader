@@ -24,7 +24,7 @@ If GitHub's API is temporarily unavailable or rate-limited, the release cards fa
 
 ## Deployment
 
-This is a plain static site. It can be hosted on GitHub Pages or any static hosting provider. For GitHub Pages, open **Settings → Pages**, choose the deployment source appropriate for the repository, and publish the root of the `main` branch.
+This is a plain static site. It can be hosted on GitHub Pages or any static hosting provider. For GitHub Pages, open **Settings → Pages**. Under **Build and deployment**, choose **Deploy from a branch**, select `main` and `/(root)`, then save. GitHub will show the published site URL on that page.
 
 ## Project files
 
