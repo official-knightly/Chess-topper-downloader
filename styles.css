@@ -619,3 +619,15 @@ a:focus-visible, button:focus-visible, summary:focus-visible {
   .orbit-live i, .orbit-ring, .logo-core, .orbit-chip, .logo-pedestal { animation: none !important; }
   .hero-orbit:hover .logo-core { transform: none; }
 }
+
+.orbit-version {
+  display: inline-flex;
+  margin-left: 7px;
+  padding: 3px 7px;
+  border: 1px solid rgba(126, 232, 236, .28);
+  border-radius: 999px;
+  color: #8be8e7;
+  letter-spacing: .04em;
+  font-size: 8px;
+  vertical-align: 1px;
+}
