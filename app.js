@@ -1,467 +1,401 @@
 (() => {
   "use strict";
 
-  const API_ROOT = "https://api.github.com/repos/official-knightly";
-  const DESKTOP_REPO = "Chess-topper-app";
-  const MOBILE_REPO = "Chess-topper-mobile";
-  const DESKTOP_RELEASES = API_ROOT + "/" + DESKTOP_REPO + "/releases";
-  const MOBILE_RELEASES = API_ROOT + "/" + MOBILE_REPO + "/releases";
+  const API = "https://api.github.com/repos/official-knightly";
+  const DESKTOP_RELEASES = API + "/Chess-topper-app/releases";
+  const MOBILE_RELEASES = API + "/Chess-topper-mobile/releases";
   const EXTENSION_MANIFEST = "https://raw.githubusercontent.com/official-knightly/Chess-topper-extension/main/manifest.json";
   const EXTENSION_ZIP = "https://github.com/official-knightly/Chess-topper-extension/archive/refs/heads/main.zip";
+  const DESKTOP_PAGE = "https://github.com/official-knightly/Chess-topper-app/releases";
+  const MOBILE_PAGE = "https://github.com/official-knightly/Chess-topper-mobile/releases";
+  const $ = (id) => document.getElementById(id);
 
-  const byId = (id) => document.getElementById(id);
-  const desktopFallback = "https://github.com/official-knightly/Chess-topper-app/releases";
-  const mobileFallback = "https://github.com/official-knightly/Chess-topper-mobile/releases";
+  let builds = [];
+  let filter = "all";
+  let detectedPlatform = "unknown";
+  let latestDesktop = [];
+  let latestAndroid = [];
 
-  let allBuilds = [];
-  let activeFilter = "all";
-
-  function safeGitHubUrl(value) {
+  function safeUrl(value) {
     try {
-      const parsed = new URL(value);
-      return parsed.protocol === "https:" && (
-        parsed.hostname === "github.com" ||
-        parsed.hostname === "objects.githubusercontent.com" ||
-        parsed.hostname === "raw.githubusercontent.com"
-      ) ? parsed.href : null;
-    } catch {
-      return null;
-    }
+      const url = new URL(value);
+      return url.protocol === "https:" && ["github.com", "objects.githubusercontent.com"].includes(url.hostname) ? url.href : null;
+    } catch { return null; }
   }
 
   async function getJson(url) {
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 12000);
+    const timeout = setTimeout(() => controller.abort(), 14000);
     try {
       const response = await fetch(url, {
         headers: { Accept: "application/vnd.github+json" },
         cache: "no-store",
         signal: controller.signal
       });
-      if (!response.ok) throw new Error("GitHub returned " + response.status);
+      if (!response.ok) throw new Error("GitHub API " + response.status);
       return await response.json();
-    } finally {
-      window.clearTimeout(timeout);
-    }
+    } finally { clearTimeout(timeout); }
   }
 
-  async function getAllReleases(baseUrl) {
-    const releases = [];
+  async function getAllReleases(url) {
+    const all = [];
     for (let page = 1; page <= 10; page += 1) {
-      const batch = await getJson(baseUrl + "?per_page=100&page=" + page);
-      if (!Array.isArray(batch)) throw new Error("Unexpected GitHub release response");
-      releases.push(...batch);
+      const batch = await getJson(url + "?per_page=100&page=" + page);
+      if (!Array.isArray(batch)) throw new Error("Invalid releases response");
+      all.push(...batch);
       if (batch.length < 100) break;
     }
-    return releases.sort((a, b) => new Date(b.published_at || b.created_at || 0) - new Date(a.published_at || a.created_at || 0));
+    return all.filter((release) => !release.draft).sort((a, b) =>
+      new Date(b.published_at || b.created_at || 0) - new Date(a.published_at || a.created_at || 0)
+    );
   }
 
-  function formatBytes(bytes) {
-    if (!Number.isFinite(Number(bytes)) || Number(bytes) <= 0) return "";
-    const size = Number(bytes);
-    if (size >= 1024 * 1024 * 1024) return (size / (1024 * 1024 * 1024)).toFixed(2) + " GB";
-    return (size / (1024 * 1024)).toFixed(1) + " MB";
+  function detectPlatform() {
+    const ua = String(navigator.userAgent || "").toLowerCase();
+    const platform = String(navigator.userAgentData?.platform || navigator.platform || "").toLowerCase();
+    const touchMac = platform.includes("mac") && navigator.maxTouchPoints > 1;
+    if (ua.includes("android")) return "android";
+    if (ua.includes("iphone") || ua.includes("ipad") || ua.includes("ipod") || touchMac) return "ios";
+    if (platform.includes("win") || ua.includes("windows")) return "windows";
+    if (platform.includes("mac") || ua.includes("macintosh")) return "mac";
+    if (platform.includes("linux") || ua.includes("linux") || ua.includes("x11")) return "linux";
+    return "unknown";
+  }
+
+  function formatBytes(value) {
+    const bytes = Number(value);
+    if (!Number.isFinite(bytes) || bytes <= 0) return "";
+    if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(2) + " GB";
+    return (bytes / 1048576).toFixed(1) + " MB";
   }
 
   function formatDate(value) {
     if (!value) return "";
     const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return "";
-    return new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", year: "numeric" }).format(date);
+    return Number.isNaN(date.getTime()) ? "" : new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", year: "numeric" }).format(date);
   }
 
-  function platformForAsset(asset, source) {
+  function getPlatform(asset, source) {
     const name = String(asset.name || "").toLowerCase();
-    if (name.endsWith(".apk")) return "android";
-    if (name.endsWith(".exe") && !name.includes("worker") && (name.includes("chess-topper") || name.includes("chess.topper"))) return "windows";
+    if (name.endsWith(".apk")) return source === "mobile" ? "android" : null;
+    if (source === "extension" && name.endsWith(".zip")) return "extension";
+    if (name.endsWith(".exe") && /chess[-. ]topper/i.test(name) && !name.includes("worker")) return "windows";
     if (name.endsWith(".dmg")) return "mac";
     if (name.endsWith(".appimage") || name.endsWith(".deb")) return "linux";
-    if (source === "extension" && name.endsWith(".zip")) return "extension";
     return null;
   }
 
-  function platformLabel(platform, name) {
-    if (platform === "windows") return "Windows";
-    if (platform === "mac") return "macOS";
-    if (platform === "linux") return String(name).toLowerCase().endsWith(".deb") ? "Linux · DEB" : "Linux · AppImage";
-    if (platform === "android") return "Android";
-    if (platform === "extension") return "Browser extension";
-    return "Download";
+  function platformName(platform) {
+    return ({windows:"Windows",mac:"macOS",linux:"Linux",android:"Android",ios:"iOS",extension:"Browser extension",unknown:"your device"})[platform] || "your device";
   }
 
-  function fileExtension(name) {
-    const match = String(name || "").match(/\.([a-z0-9]+)$/i);
-    return match ? match[1].toUpperCase() : "FILE";
+  function platformLabel(platform, filename) {
+    if (platform === "linux" && String(filename).toLowerCase().endsWith(".deb")) return "Linux · DEB";
+    if (platform === "linux") return "Linux · AppImage";
+    return platformName(platform);
   }
 
-  function preferredAsset(assets) {
-    const platform = String(navigator.userAgentData?.platform || navigator.platform || navigator.userAgent || "").toLowerCase();
-    const matches = (suffix) => assets.find((asset) => String(asset.name).toLowerCase().endsWith(suffix));
-    if (platform.includes("win")) return matches(".exe") || null;
-    if (platform.includes("mac") || platform.includes("iphone") || platform.includes("ipad")) return matches(".dmg") || null;
-    if (platform.includes("linux") || platform.includes("x11")) return matches(".appimage") || matches(".deb") || null;
+  function getPreferredAsset(assets, platform) {
+    const matching = assets.filter((asset) => getPlatform(asset, platform === "android" ? "mobile" : "desktop") === platform && safeUrl(asset.browser_download_url));
+    if (platform === "linux") return matching.find((asset) => asset.name.toLowerCase().endsWith(".appimage")) || matching.find((asset) => asset.name.toLowerCase().endsWith(".deb")) || null;
+    if (platform === "windows") return matching.find((asset) => asset.name.toLowerCase().endsWith(".exe")) || null;
+    if (platform === "mac") return matching.find((asset) => asset.name.toLowerCase().endsWith(".dmg")) || null;
+    if (platform === "android") return matching.find((asset) => asset.name.toLowerCase() === "chess.topper.apk") || matching[0] || null;
     return null;
   }
 
-  function setButton(button, label, href) {
-    const safeUrl = safeGitHubUrl(href);
-    if (!button || !safeUrl) return;
-    button.href = safeUrl;
-    button.target = "_self";
-    button.rel = "noreferrer";
-    button.innerHTML = label + ' <span aria-hidden="true">↓</span>';
-    button.setAttribute("aria-label", label);
-    button.classList.remove("is-loading");
+  function setDownloadLink(element, label, href) {
+    const url = safeUrl(href);
+    if (!element || !url) return false;
+    element.href = url;
+    element.removeAttribute("target");
+    element.rel = "noreferrer";
+    element.innerHTML = label + ' <span aria-hidden="true">↓</span>';
+    element.setAttribute("aria-label", label);
+    return true;
   }
 
-  function appendAssetLink(container, asset, label) {
-    const href = safeGitHubUrl(asset.browser_download_url);
-    if (!container || !href) return;
-    const link = document.createElement("a");
-    link.href = href;
-    link.textContent = label + (asset.size ? " · " + formatBytes(asset.size) : "");
-    container.appendChild(link);
-  }
-
-  function latestRelease(releases) {
-    return Array.isArray(releases) ? releases.find((release) => !release.draft && !release.prerelease) : null;
+  function latestPublished(releases) {
+    return releases.find((release) => !release.prerelease) || releases[0] || null;
   }
 
   async function loadDesktop() {
     try {
       const releases = await getAllReleases(DESKTOP_RELEASES);
-      const release = latestRelease(releases);
-      if (!release) throw new Error("No published desktop releases found");
-      const assets = (release.assets || []).filter((asset) => platformForAsset(asset, "desktop") && safeGitHubUrl(asset.browser_download_url));
-      const version = release.tag_name || release.name || "Latest";
-      byId("desktop-version").textContent = version;
-      byId("hero-version").textContent = version;
-
-      const primary = preferredAsset(assets);
-      if (primary) {
-        const platform = platformForAsset(primary, "desktop");
-        setButton(byId("desktop-primary"), "Download for " + (platform === "windows" ? "Windows" : platform === "mac" ? "macOS" : "Linux"), primary.browser_download_url);
-      } else {
-        setButton(byId("desktop-primary"), "Choose a desktop installer", release.html_url || desktopFallback);
-      }
-
-      const alternatives = byId("desktop-assets");
+      const release = latestPublished(releases);
+      if (!release) throw new Error("No desktop releases");
+      latestDesktop = release.assets || [];
+      $("desktop-version").textContent = release.tag_name || release.name || "Latest";
+      $("hero-version").textContent = release.tag_name || "Latest";
+      const selected = getPreferredAsset(latestDesktop, detectedPlatform);
+      if (selected) setDownloadLink($("desktop-primary"), "Download for " + platformName(detectedPlatform), selected.browser_download_url);
+      else setDownloadLink($("desktop-primary"), "Browse all desktop installers", release.html_url || DESKTOP_PAGE);
+      const alternatives = $("desktop-assets");
       alternatives.replaceChildren();
-      assets.filter((asset) => asset !== primary).forEach((asset) => appendAssetLink(alternatives, asset, platformLabel(platformForAsset(asset, "desktop"), asset.name)));
-
-      const date = formatDate(release.published_at);
-      byId("desktop-updated").textContent = date
-        ? "Latest release published " + date + " · " + releases.length + " published desktop release" + (releases.length === 1 ? "" : "s")
-        : "Installer links are served directly by GitHub.";
-      return { ok: true, version, releases };
+      latestDesktop.filter((asset) => getPlatform(asset, "desktop") && asset !== selected && safeUrl(asset.browser_download_url)).forEach((asset) => {
+        const link = document.createElement("a");
+        link.href = safeUrl(asset.browser_download_url);
+        link.textContent = asset.name + (asset.size ? " · " + formatBytes(asset.size) : "");
+        link.rel = "noreferrer";
+        alternatives.append(link);
+      });
+      $("desktop-updated").textContent = "Latest stable release · " + formatDate(release.published_at) + " · " + releases.length + " published version(s) indexed";
+      return {ok:true,releases,version:release.tag_name || "Latest"};
     } catch (error) {
-      byId("desktop-version").textContent = "See GitHub";
-      byId("hero-version").textContent = "Latest";
-      byId("desktop-updated").textContent = "Could not load release data. Open GitHub to view the installer files.";
-      setButton(byId("desktop-primary"), "View desktop releases", desktopFallback);
-      return { ok: false, version: "", releases: [], error };
+      $("desktop-version").textContent = "Unavailable";
+      $("desktop-updated").textContent = "Could not reach GitHub. The full release page is still available.";
+      setDownloadLink($("desktop-primary"), "Open desktop releases", DESKTOP_PAGE);
+      return {ok:false,releases:[],error};
     }
   }
 
   async function loadMobile() {
     try {
       const releases = await getAllReleases(MOBILE_RELEASES);
-      const release = latestRelease(releases);
-      if (!release) throw new Error("No published Android releases found");
-      const apkAssets = (release.assets || []).filter((asset) =>
-        String(asset.name || "").toLowerCase().endsWith(".apk") && safeGitHubUrl(asset.browser_download_url)
-      );
-      const apk = apkAssets.find((asset) => String(asset.name).toLowerCase() === "chess.topper.apk") || apkAssets[0];
-      byId("mobile-version").textContent = release.tag_name || release.name || "Latest";
+      const release = latestPublished(releases);
+      if (!release) throw new Error("No Android releases");
+      const assets = release.assets || [];
+      const apk = assets.find((asset) => asset.name.toLowerCase() === "chess.topper.apk" && safeUrl(asset.browser_download_url)) ||
+        assets.find((asset) => asset.name.toLowerCase().endsWith(".apk") && safeUrl(asset.browser_download_url));
+      $("mobile-version").textContent = release.tag_name || release.name || "Latest";
       if (apk) {
-        setButton(byId("mobile-primary"), "Download Android APK", apk.browser_download_url);
-        byId("mobile-file").textContent = apk.name + (apk.size ? " · " + formatBytes(apk.size) : "") +
-          (release.published_at ? " · Published " + formatDate(release.published_at) : "");
+        setDownloadLink($("mobile-primary"), "Download Android APK", apk.browser_download_url);
+        $("mobile-file").textContent = apk.name + (apk.size ? " · " + formatBytes(apk.size) : "") + " · " + formatDate(release.published_at);
       } else {
-        setButton(byId("mobile-primary"), "View Android release", release.html_url || mobileFallback);
-        byId("mobile-file").textContent = "This release currently has no APK asset.";
+        setDownloadLink($("mobile-primary"), "Open Android releases", release.html_url || MOBILE_PAGE);
+        $("mobile-file").textContent = "No APK file is attached to the latest release.";
       }
-      return { ok: Boolean(apk), version: release.tag_name || "Latest", releases };
+      latestAndroid = assets;
+      return {ok:Boolean(apk),releases,version:release.tag_name || "Latest"};
     } catch (error) {
-      byId("mobile-version").textContent = "See GitHub";
-      byId("mobile-file").textContent = "Could not load APK details. Open GitHub to check current Android builds.";
-      setButton(byId("mobile-primary"), "View Android releases", mobileFallback);
-      return { ok: false, version: "", releases: [], error };
+      $("mobile-version").textContent = "Unavailable";
+      $("mobile-file").textContent = "Could not reach GitHub to check Android builds.";
+      setDownloadLink($("mobile-primary"), "Open Android releases", MOBILE_PAGE);
+      return {ok:false,releases:[],error};
     }
   }
 
   async function loadExtensionVersion() {
     try {
-      const manifest = await getJson(EXTENSION_MANIFEST);
-      const version = String(manifest.version || "").trim();
-      if (version) {
-        const value = document.querySelector(".product-card:nth-child(2) .version-row strong");
-        if (value) value.textContent = version;
+      const manifest = await getJson("https://raw.githubusercontent.com/official-knightly/Chess-topper-extension/main/manifest.json");
+      if (manifest.version) {
+        const node = document.querySelector("#extension-download")?.closest(".product-card")?.querySelector(".version-row strong");
+        if (node) node.textContent = manifest.version;
       }
-    } catch {
-      // The extension source archive remains available if the manifest cannot be reached.
-    }
+    } catch { /* Keep the source archive link working if the manifest is unavailable. */ }
   }
 
   function collectBuilds(desktopReleases, mobileReleases) {
-    const builds = [];
-
-    (desktopReleases || []).forEach((release) => {
-      if (release.draft) return;
-      (release.assets || []).forEach((asset) => {
-        const platform = platformForAsset(asset, "desktop");
-        const href = safeGitHubUrl(asset.browser_download_url);
-        if (!platform || !href) return;
-        builds.push({
-          key: "desktop-" + release.id + "-" + asset.id,
-          platform,
-          product: "Chess Topper Desktop",
-          version: release.tag_name || release.name || "Desktop build",
-          releaseTitle: release.name || "Chess Topper Desktop",
-          date: release.published_at || release.created_at,
-          filename: asset.name,
-          size: asset.size,
-          downloads: asset.download_count,
-          url: href
+    const items = [];
+    const addReleaseAssets = (releases, source, product) => {
+      releases.forEach((release) => {
+        (release.assets || []).forEach((asset) => {
+          const platform = getPlatform(asset, source);
+          const url = safeUrl(asset.browser_download_url);
+          if (!platform || !url) return;
+          items.push({
+            id: source + "-" + release.id + "-" + asset.id,
+            platform, product,
+            version: release.tag_name || release.name || "Build",
+            date: release.published_at || release.created_at || "",
+            filename: asset.name,
+            size: asset.size || 0,
+            downloads: Number(asset.download_count || 0),
+            url,
+            releaseUrl: safeUrl(release.html_url)
+          });
         });
       });
+    };
+    addReleaseAssets(desktopReleases, "desktop", "Chess Topper Desktop");
+    addReleaseAssets(mobileReleases, "mobile", "Chess Topper Android");
+    items.push({
+      id:"extension-main-zip",platform:"extension",product:"Chess Topper Extension",
+      version:"main branch",date:"",filename:"Chess-topper-extension-main.zip",
+      size:0,downloads:null,url:EXTENSION_ZIP,releaseUrl:"https://github.com/official-knightly/Chess-topper-extension"
     });
-
-    (mobileReleases || []).forEach((release) => {
-      if (release.draft) return;
-      (release.assets || []).forEach((asset) => {
-        const platform = platformForAsset(asset, "mobile");
-        const href = safeGitHubUrl(asset.browser_download_url);
-        if (platform !== "android" || !href) return;
-        builds.push({
-          key: "mobile-" + release.id + "-" + asset.id,
-          platform,
-          product: "Chess Topper Mobile",
-          version: release.tag_name || release.name || "Android build",
-          releaseTitle: release.name || "Chess Topper Mobile",
-          date: release.published_at || release.created_at,
-          filename: asset.name,
-          size: asset.size,
-          downloads: asset.download_count,
-          url: href
-        });
-      });
-    });
-
-    builds.push({
-      key: "extension-main-source",
-      platform: "extension",
-      product: "Chess Topper Extension",
-      version: "main",
-      releaseTitle: "Browser extension source archive",
-      date: "",
-      filename: "Chess-topper-extension-main.zip",
-      size: 0,
-      downloads: null,
-      url: EXTENSION_ZIP
-    });
-
-    return builds.sort((a, b) => {
-      const dateA = new Date(a.date || 0).getTime();
-      const dateB = new Date(b.date || 0).getTime();
-      return dateB - dateA;
-    });
+    return items.sort((a,b) => new Date(b.date || 0) - new Date(a.date || 0));
   }
 
-  function createBuildRow(build) {
-    const row = document.createElement("div");
+  function makeBuildRow(build) {
+    const row = document.createElement("article");
     row.className = "build-row";
-    row.dataset.platform = build.platform;
-    row.dataset.search = [build.product, build.version, build.filename, platformLabel(build.platform, build.filename)].join(" ").toLowerCase();
-
     const file = document.createElement("div");
     file.className = "build-file";
-
     const icon = document.createElement("span");
     icon.className = "build-file-icon";
-    icon.setAttribute("aria-hidden", "true");
-    icon.textContent = fileExtension(build.filename);
-
+    icon.setAttribute("aria-hidden","true");
+    icon.textContent = build.filename.split(".").pop().toUpperCase().slice(0,5);
     const copy = document.createElement("div");
     copy.className = "build-file-copy";
-
     const name = document.createElement("span");
     name.className = "build-file-name";
     name.textContent = build.filename;
-
-    const details = document.createElement("span");
-    details.className = "build-file-details";
+    const meta = document.createElement("span");
+    meta.className = "build-file-details";
     const platform = document.createElement("span");
     platform.className = "build-platform";
-    platform.textContent = platformLabel(build.platform, build.filename);
-    details.append(platform);
-
+    platform.textContent = platformLabel(build.platform,build.filename);
+    meta.append(platform);
     if (build.size) {
       const size = document.createElement("span");
       size.textContent = formatBytes(build.size);
-      details.append(size);
+      meta.append(size);
     }
-    if (typeof build.downloads === "number") {
-      const downloads = document.createElement("span");
-      downloads.textContent = build.downloads + " GitHub download" + (build.downloads === 1 ? "" : "s");
-      details.append(downloads);
+    if (build.date) {
+      const date = document.createElement("span");
+      date.textContent = formatDate(build.date);
+      meta.append(date);
     }
-
-    copy.append(name, details);
-    file.append(icon, copy);
-
-    const link = document.createElement("a");
-    link.className = "build-download";
-    link.href = build.url;
-    link.textContent = "Download";
-    link.setAttribute("aria-label", "Download " + build.filename + " from " + build.version);
-    link.rel = "noreferrer";
-
-    row.append(file, link);
+    copy.append(name,meta);
+    file.append(icon,copy);
+    const actions = document.createElement("div");
+    actions.className = "build-row-actions";
+    const download = document.createElement("a");
+    download.className = "build-download";
+    download.href = build.url;
+    download.rel = "noreferrer";
+    download.textContent = "Download";
+    download.setAttribute("aria-label","Download " + build.filename + " (" + build.version + ")");
+    actions.append(download);
+    if (build.releaseUrl) {
+      const notes = document.createElement("a");
+      notes.className = "build-release-link";
+      notes.href = build.releaseUrl;
+      notes.rel = "noreferrer";
+      notes.textContent = "Release notes";
+      actions.append(notes);
+    }
+    row.append(file,actions);
     return row;
   }
 
-  function renderBuildLibrary() {
-    const list = byId("build-library-list");
+  function renderBuilds() {
+    const list = $("build-library-list");
     if (!list) return;
-    const query = String(byId("build-search")?.value || "").trim().toLowerCase();
-    const filtered = allBuilds.filter((build) =>
-      (activeFilter === "all" || build.platform === activeFilter) &&
-      (!query || [build.product, build.version, build.filename, platformLabel(build.platform, build.filename)].join(" ").toLowerCase().includes(query))
+    const query = String($("build-search")?.value || "").trim().toLowerCase();
+    const visible = builds.filter((item) =>
+      (filter === "all" || item.platform === filter) &&
+      (!query || [item.product,item.version,item.filename,platformLabel(item.platform,item.filename)].join(" ").toLowerCase().includes(query))
     );
-
-    byId("build-count").textContent = String(filtered.length);
+    $("build-count").textContent = String(visible.length);
     list.replaceChildren();
-
-    if (!filtered.length) {
+    if (!visible.length) {
       const empty = document.createElement("div");
       empty.className = "build-empty";
-      empty.textContent = allBuilds.length
-        ? "No installer files match this filter. Try another platform or search."
-        : "No installer files are published in the connected releases yet.";
+      empty.textContent = builds.length ? "No builds match that filter. Try another platform or search." : "No release assets were found.";
       list.append(empty);
       return;
     }
-
     const groups = new Map();
-    filtered.forEach((build) => {
-      const groupKey = build.product + "||" + build.version;
-      if (!groups.has(groupKey)) groups.set(groupKey, []);
-      groups.get(groupKey).push(build);
+    visible.forEach((item) => {
+      const key = item.product + "|" + item.version;
+      if (!groups.has(key)) groups.set(key,[]);
+      groups.get(key).push(item);
     });
-
     groups.forEach((items) => {
-      const first = items[0];
       const group = document.createElement("section");
       group.className = "release-group";
-
       const heading = document.createElement("div");
       heading.className = "release-group-heading";
-
       const title = document.createElement("div");
       title.className = "release-group-title";
       const product = document.createElement("strong");
-      product.textContent = first.product;
+      product.textContent = items[0].product;
       const version = document.createElement("span");
       version.className = "release-version";
-      version.textContent = first.version;
-      title.append(product, version);
-
+      version.textContent = items[0].version;
+      title.append(product,version);
       const date = document.createElement("span");
       date.className = "release-date";
-      date.textContent = first.date ? "Published " + formatDate(first.date) : "Source archive";
-
-      heading.append(title, date);
+      date.textContent = items[0].date ? "Published " + formatDate(items[0].date) : "Live source archive";
+      heading.append(title,date);
       group.append(heading);
-      items.forEach((build) => group.append(createBuildRow(build)));
+      items.forEach((item) => group.append(makeBuildRow(item)));
       list.append(group);
     });
   }
 
-  async function loadAllBuilds(desktopReleases, mobileReleases) {
-    const list = byId("build-library-list");
-    const status = byId("library-status");
-    if (list) list.setAttribute("aria-busy", "true");
-    try {
-      allBuilds = collectBuilds(desktopReleases, mobileReleases);
-      renderBuildLibrary();
-      const desktopCount = allBuilds.filter((build) => build.product === "Chess Topper Desktop").length;
-      const androidCount = allBuilds.filter((build) => build.product === "Chess Topper Mobile").length;
-      const extensionCount = allBuilds.filter((build) => build.product === "Chess Topper Extension").length;
-      status.textContent = "Pulled " + desktopCount + " desktop installer(s), " + androidCount + " Android APK(s), and " + extensionCount + " extension archive from your GitHub projects.";
-    } catch {
-      status.textContent = "Could not build the download catalogue. The GitHub release links above are still available.";
-      status.classList.add("is-error");
-      if (list) {
-        list.replaceChildren();
-        const error = document.createElement("div");
-        error.className = "build-error";
-        error.textContent = "GitHub release data could not be loaded. Check your connection or open the release pages directly.";
-        list.append(error);
-      }
-    } finally {
-      if (list) list.setAttribute("aria-busy", "false");
-    }
-  }
-
   function setupFilters() {
     document.querySelectorAll(".filter-chip").forEach((button) => {
-      button.addEventListener("click", () => {
-        activeFilter = button.dataset.filter || "all";
+      button.addEventListener("click",() => {
+        filter = button.dataset.filter || "all";
         document.querySelectorAll(".filter-chip").forEach((chip) => {
           const active = chip === button;
-          chip.classList.toggle("is-active", active);
-          chip.setAttribute("aria-pressed", String(active));
+          chip.classList.toggle("is-active",active);
+          chip.setAttribute("aria-pressed",String(active));
         });
-        renderBuildLibrary();
+        renderBuilds();
       });
     });
-    const search = byId("build-search");
-    if (search) search.addEventListener("input", renderBuildLibrary);
+    $("build-search")?.addEventListener("input",renderBuilds);
   }
 
   function setupNavigation() {
     const toggle = document.querySelector(".menu-toggle");
-    const nav = byId("primary-nav");
+    const nav = $("primary-nav");
     if (!toggle || !nav) return;
     const close = () => {
-      toggle.setAttribute("aria-expanded", "false");
-      toggle.setAttribute("aria-label", "Open navigation");
+      toggle.setAttribute("aria-expanded","false");
+      toggle.setAttribute("aria-label","Open navigation");
       nav.classList.remove("is-open");
     };
-    toggle.addEventListener("click", () => {
+    toggle.addEventListener("click",() => {
       const open = toggle.getAttribute("aria-expanded") !== "true";
-      toggle.setAttribute("aria-expanded", String(open));
-      toggle.setAttribute("aria-label", open ? "Close navigation" : "Open navigation");
-      nav.classList.toggle("is-open", open);
+      toggle.setAttribute("aria-expanded",String(open));
+      toggle.setAttribute("aria-label",open ? "Close navigation" : "Open navigation");
+      nav.classList.toggle("is-open",open);
     });
-    nav.querySelectorAll("a").forEach((link) => link.addEventListener("click", close));
-    document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") close();
-    });
-    document.addEventListener("click", (event) => {
+    nav.querySelectorAll("a").forEach((link) => link.addEventListener("click",close));
+    document.addEventListener("keydown",(event) => { if (event.key === "Escape") close(); });
+    document.addEventListener("click",(event) => {
       if (!nav.contains(event.target) && !toggle.contains(event.target)) close();
     });
   }
 
+  function configureDeviceDownload() {
+    const heroLink = $("hero-download");
+    const note = $("device-detection");
+    const platform = detectedPlatform;
+    const latest = platform === "android" ? getPreferredAsset(latestAndroid,"android") : getPreferredAsset(latestDesktop,platform);
+    if (platform === "ios") {
+      heroLink.textContent = "Android app not available for iOS";
+      heroLink.href = "#all-builds";
+      note.textContent = "You're on iOS. Chess Topper currently publishes an Android APK and desktop installers.";
+      return;
+    }
+    if (latest) {
+      setDownloadLink(heroLink,"Download for " + platformName(platform),latest.browser_download_url);
+      note.textContent = "Detected " + platformName(platform) + " · " + latest.name + " · " + formatBytes(latest.size);
+      heroLink.classList.add("device-download-ready");
+    } else {
+      heroLink.textContent = "Browse all downloads ↓";
+      heroLink.href = "#all-builds";
+      note.textContent = platform === "unknown"
+        ? "Device detection is unavailable. Choose your installer from the complete library."
+        : "Detected " + platformName(platform) + ", but no matching installer is attached to the latest release. Browse every available build.";
+    }
+  }
+
   async function init() {
-    byId("year").textContent = String(new Date().getFullYear());
+    $("year").textContent = String(new Date().getFullYear());
+    detectedPlatform = detectPlatform();
     setupNavigation();
     setupFilters();
-    const [desktop, mobile] = await Promise.all([loadDesktop(), loadMobile()]);
-    await Promise.all([
-      loadExtensionVersion(),
-      loadAllBuilds(desktop.releases, mobile.releases)
-    ]);
-
-    const status = byId("release-status");
-    if (desktop.ok && mobile.ok) {
-      status.textContent = "Release channels connected · Desktop " + desktop.version + " · Android " + mobile.version;
-    } else if (desktop.ok || mobile.ok) {
-      status.textContent = "Some release data is available · Check GitHub for the rest";
-    } else {
-      status.textContent = "Live release data unavailable · GitHub links are still available below";
-    }
+    $("device-detection").textContent = "Detected " + platformName(detectedPlatform) + " · Checking the latest compatible installer…";
+    const [desktop,mobile] = await Promise.all([loadDesktop(),loadMobile()]);
+    builds = collectBuilds(desktop.releases,mobile.releases);
+    renderBuilds();
+    $("build-library-list").setAttribute("aria-busy","false");
+    const desktopCount = builds.filter((item) => ["windows","mac","linux"].includes(item.platform)).length;
+    const androidCount = builds.filter((item) => item.platform === "android").length;
+    $("library-status").textContent = "Synced from GitHub · " + desktopCount + " desktop installers · " + androidCount + " Android APKs · every published desktop version is included.";
+    configureDeviceDownload();
+    await loadExtensionVersion();
+    const releaseStatus = $("release-status");
+    releaseStatus.textContent = (desktop.ok || mobile.ok)
+      ? "GitHub connected · " + builds.length + " downloadable files indexed"
+      : "GitHub is temporarily unavailable · Use the complete release pages below";
   }
 
   init();
