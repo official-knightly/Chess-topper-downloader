@@ -4,6 +4,7 @@
   const API = "https://api.github.com/repos/official-knightly";
   const DESKTOP_RELEASES = API + "/Chess-topper-app/releases";
   const MOBILE_RELEASES = API + "/Chess-topper-mobile/releases";
+  const SIGMA_RELEASES = API + "/berserk-sigma/releases";
   const EXTENSION_MANIFEST = "https://raw.githubusercontent.com/official-knightly/Chess-topper-extension/main/manifest.json";
   const EXTENSION_ZIP = "https://github.com/official-knightly/Chess-topper-extension/archive/refs/heads/main.zip";
   const DESKTOP_PAGE = "https://github.com/official-knightly/Chess-topper-app/releases";
@@ -15,6 +16,7 @@
   let detectedPlatform = "unknown";
   let latestDesktop = [];
   let latestAndroid = [];
+  let latestSigma = [];
 
   function safeUrl(value) {
     try {
@@ -77,7 +79,7 @@
 
   function getPlatform(asset, source) {
     const name = String(asset.name || "").toLowerCase();
-    if (name.endsWith(".apk")) return source === "mobile" ? "android" : null;
+    if (name.endsWith(".apk")) return source === "mobile" || source === "sigma" ? "android" : null;
     if (source === "extension" && name.endsWith(".zip")) return "extension";
     if (name.endsWith(".exe") && /chess[-. ]topper/i.test(name) && !name.includes("worker")) return "windows";
     if (name.endsWith(".dmg")) return "mac";
@@ -95,8 +97,9 @@
     return platformName(platform);
   }
 
-  function getPreferredAsset(assets, platform) {
-    const matching = assets.filter((asset) => getPlatform(asset, platform === "android" ? "mobile" : "desktop") === platform && safeUrl(asset.browser_download_url));
+  function getPreferredAsset(assets, platform, source) {
+    const releaseSource = source || (platform === "android" ? "mobile" : "desktop");
+    const matching = assets.filter((asset) => getPlatform(asset, releaseSource) === platform && safeUrl(asset.browser_download_url));
     if (platform === "linux") return matching.find((asset) => asset.name.toLowerCase().endsWith(".appimage")) || matching.find((asset) => asset.name.toLowerCase().endsWith(".deb")) || null;
     if (platform === "windows") return matching.find((asset) => asset.name.toLowerCase().endsWith(".exe")) || null;
     if (platform === "mac") return matching.find((asset) => asset.name.toLowerCase().endsWith(".dmg")) || null;
@@ -175,6 +178,41 @@
     }
   }
 
+  async function loadSigma() {
+    try {
+      const releases = await getAllReleases(SIGMA_RELEASES);
+      const release = latestPublished(releases);
+      if (!release) throw new Error("No Berserk Sigma releases");
+      latestSigma = release.assets || [];
+      $("sigma-version").textContent = release.tag_name || release.name || "Latest";
+      const platform = detectedPlatform === "android" ? "android" : detectedPlatform;
+      const selected = getPreferredAsset(latestSigma, platform, "sigma");
+      if (selected) {
+        setDownloadLink($("sigma-primary"), "Download Chess Topper Sigma for " + platformName(platform), selected.browser_download_url);
+        $("sigma-file").textContent = selected.name + (selected.size ? " · " + formatBytes(selected.size) : "") + " · " + formatDate(release.published_at);
+      } else {
+        setDownloadLink($("sigma-primary"), "Browse Sigma downloads", release.html_url || "https://github.com/official-knightly/berserk-sigma/releases");
+        $("sigma-file").textContent = "No installer for this device is attached to the latest release.";
+      }
+      const alternatives = $("sigma-assets");
+      alternatives.replaceChildren();
+      latestSigma.filter((asset) => getPlatform(asset, "sigma") && asset !== selected && safeUrl(asset.browser_download_url)).forEach((asset) => {
+        const link = document.createElement("a");
+        link.href = safeUrl(asset.browser_download_url);
+        link.textContent = asset.name + (asset.size ? " · " + formatBytes(asset.size) : "");
+        link.rel = "noreferrer";
+        alternatives.append(link);
+      });
+      $("sigma-updated").textContent = "Latest stable Sigma release · " + formatDate(release.published_at);
+      return {ok:true,releases,version:release.tag_name || "Latest"};
+    } catch (error) {
+      $("sigma-version").textContent = "Unavailable";
+      $("sigma-file").textContent = "Could not reach GitHub to check Sigma builds.";
+      setDownloadLink($("sigma-primary"), "Open Sigma releases", "https://github.com/official-knightly/berserk-sigma/releases");
+      return {ok:false,releases:[],error};
+    }
+  }
+
   async function loadExtensionVersion() {
     try {
       const manifest = await getJson("https://raw.githubusercontent.com/official-knightly/Chess-topper-extension/main/manifest.json");
@@ -185,7 +223,7 @@
     } catch { /* Keep the source archive link working if the manifest is unavailable. */ }
   }
 
-  function collectBuilds(desktopReleases, mobileReleases) {
+  function collectBuilds(desktopReleases, mobileReleases, sigmaReleases) {
     const items = [];
     const addReleaseAssets = (releases, source, product) => {
       releases.forEach((release) => {
@@ -208,7 +246,8 @@
       });
     };
     addReleaseAssets(desktopReleases, "desktop", "Chess Topper Desktop");
-    addReleaseAssets(mobileReleases, "mobile", "Chess Topper Android");
+    addReleaseAssets(mobileReleases, "mobile", "Chess Topper Mobile");
+    addReleaseAssets(sigmaReleases, "sigma", "Chess Topper Sigma");
     items.push({
       id:"extension-main-zip",platform:"extension",product:"Chess Topper Extension",
       version:"main branch",date:"",filename:"Chess-topper-extension-main.zip",
@@ -383,17 +422,17 @@
     setupNavigation();
     setupFilters();
     $("device-detection").textContent = "Detected " + platformName(detectedPlatform) + " · Checking the latest compatible installer…";
-    const [desktop,mobile] = await Promise.all([loadDesktop(),loadMobile()]);
-    builds = collectBuilds(desktop.releases,mobile.releases);
+    const [desktop,mobile,sigma] = await Promise.all([loadDesktop(),loadMobile(),loadSigma()]);
+    builds = collectBuilds(desktop.releases,mobile.releases,sigma.releases);
     renderBuilds();
     $("build-library-list").setAttribute("aria-busy","false");
     const desktopCount = builds.filter((item) => ["windows","mac","linux"].includes(item.platform)).length;
     const androidCount = builds.filter((item) => item.platform === "android").length;
-    $("library-status").textContent = "Synced from GitHub · " + desktopCount + " desktop installers · " + androidCount + " Android APKs · every published desktop version is included.";
+    $("library-status").textContent = "Synced from GitHub · " + desktopCount + " desktop installers · " + androidCount + " Android APKs · Chess Topper, Mobile and Sigma releases included.";
     configureDeviceDownload();
     await loadExtensionVersion();
     const releaseStatus = $("release-status");
-    releaseStatus.textContent = (desktop.ok || mobile.ok)
+    releaseStatus.textContent = (desktop.ok || mobile.ok || sigma.ok)
       ? "GitHub connected · " + builds.length + " downloadable files indexed"
       : "GitHub is temporarily unavailable · Use the complete release pages below";
   }
